@@ -1,6 +1,6 @@
 # 🎬 RecordX
 
-**Chrome Extension Screen Recorder** with system audio capture, microphone recording, live transcription, and AI-powered Minutes of Meeting generator.
+**Chrome Extension Screen Recorder** featuring high-fidelity system audio capture, microphone recording, live offscreen transcription, a standalone floating popup, and a designer-grade Minutes of Meeting (MoM) editorial board with AI generation and premium PDF/MD export.
 
 ![RecordX](src/assets/logo.svg)
 
@@ -8,30 +8,46 @@
 
 | Feature | Description |
 |---------|-------------|
-| 🖥️ **Screen Recording** | Record your screen with high-quality video |
-| 🎙️ **Microphone Capture** | Record your voice alongside screen capture |
-| 🔊 **System Audio** | Capture system/tab audio |
-| 🎛️ **Mixed Audio** | Record both mic and system audio simultaneously |
-| 📝 **Live Transcription** | Real-time speech-to-text using Web Speech API |
-| 📋 **Minutes of Meeting** | AI-generated meeting notes from transcripts |
-| 🔐 **Google OAuth** | Secure authentication via Supabase |
-| ☁️ **Cloud Storage** | Recordings saved to Supabase Storage |
-| 📜 **Recording History** | Browse, play, and manage past recordings |
+| 🖥️ **Screen Recording** | Record entire screens, specific windows, or browser tabs in high-quality WebM. |
+| 🔊 **Hi-Fi System Audio** | Crisp system audio capture with echo cancellation & noise suppression disabled specifically for system tracks to avoid muffled audio. |
+| 🎙️ **Microphone Capture** | Capture your microphone voice simultaneously with Web Audio API mixing. |
+| 📌 **Persistent Floating Window** | Popup opens as a standalone floating OS window that **never auto-closes** on focus loss, letting you easily pause/resume/stop and monitor transcripts. |
+| 📝 **Offscreen Transcription** | Stable real-time transcription using the Web Speech API delegated to an Offscreen Document, preserving transcription across popup closures. |
+| 📋 **Luxury MoM Editor** | Structured meeting notes featuring agenda topic cards, inline decision lists, draggable action item tables, and collapsible raw transcripts. |
+| 🔲 **Designer Monochrome Theme** | Stunning, corporate-ready minimalist black-and-white theme featuring deep obsidian glass, crisp white actions, and elegant metallic gradients. |
+| 📄 **High-Fidelity PDF & MD Export** | Export beautifully designed MoMs to Markdown, or save directly as PDF using custom `@media print` style sheets that strip interactive controls for standard publication-grade prints. |
+| ⚡ **IndexedDB Sharing** | Zero-copy binary sharing between pages and the service worker via IndexedDB, solving extension messaging size limits and 0-byte file upload issues. |
+| 🔐 **Google OAuth** | Secure, background-delegated Google sign-in using Supabase PKCE flow. |
+| ☁️ **Supabase Cloud Storage** | Automatic background uploads to Supabase Storage with metadata tracked in a PostgreSQL database. |
 
 ## 🏗️ Architecture
 
 ```
-Popup UI ←→ Service Worker ←→ Offscreen Document
-   ↓              ↓                    ↓
-Auth Flow    Orchestration     MediaRecorder
-   ↓              ↓              Web Audio API
-Supabase     Chrome APIs      Audio Mixing
+                 [ Floating Popup UI ]
+                           │
+             (Runtime Message - State Sync)
+                           │
+                           ▼
+                  [ Service Worker ]
+                           │
+             (Create & Orchestrate Stream)
+                           │
+                           ▼
+                 [ Offscreen Document ]
+               ┌───────────┴───────────┐
+               ▼                       ▼
+      [ MediaRecorder ]        [ Web Speech API ]
+      (Audio Context)         (Mic Transcribing)
+               │                       │
+               ▼                       ▼
+      [ Write IndexedDB ]     [ Stream Segment ]
+      (Zero-Copy Blob)        (Real-time Text)
 ```
 
-- **Manifest V3** with service worker
-- **Offscreen Document** for media recording (DOM-dependent APIs)
-- **Web Audio API** for mixing multiple audio streams
-- **PKCE OAuth** flow via `chrome.identity.launchWebAuthFlow`
+- **Manifest V3 Specification** with background service worker life-cycle orchestration.
+- **Persistent Offscreen Document** keeping transcription and recording threads alive across popup open/close states.
+- **Web Audio API mixing engine** combining display streams and microphone input.
+- **Tus-based Supabase Chunked Storage Uploader** for unlimited recording sizes.
 
 ## 🚀 Getting Started
 
@@ -39,9 +55,9 @@ Supabase     Chrome APIs      Audio Mixing
 
 - Node.js 18+
 - npm or pnpm
-- A [Supabase](https://supabase.com) project
-- Google Cloud Console OAuth credentials
-- (Optional) OpenAI API key for MoM AI generation
+- A [Supabase](https://supabase.com) project with a PostgreSQL database and a storage bucket
+- Google Cloud Console credentials
+- OpenAI API key for AI MoM generation
 
 ### 1. Install Dependencies
 
@@ -52,107 +68,104 @@ npm install
 
 ### 2. Configure Environment
 
-Copy the example env file and fill in your credentials:
+Create a `.env` file in the root directory:
 
-```bash
-cp .env.example .env
-```
-
-Edit `.env`:
 ```env
 VITE_SUPABASE_URL=https://your-project.supabase.co
 VITE_SUPABASE_ANON_KEY=your-anon-key
-VITE_OPENAI_API_KEY=your-openai-key  # Optional
+VITE_OPENAI_API_KEY=your-openai-key  # Required for AI MoM generation
 ```
 
 ### 3. Set Up Supabase
 
-1. Go to your Supabase project dashboard
-2. Open the **SQL Editor**
-3. Run the SQL from `supabase/schema.sql` to create tables and policies
-4. Create a **Storage bucket** named `recordings`
-5. Go to **Authentication > URL Configuration** and add your extension's redirect URL:
+1. Open the Supabase dashboard.
+2. Go to the **SQL Editor** and run the query in `supabase/schema.sql` to generate database tables, schemas, and Row Level Security (RLS) policies.
+3. Create a **Storage Bucket** named `recordings` with public access (or customized RLS).
+4. Go to **Authentication > URL Configuration > Redirects** and add your unique extension callback URL:
    ```
    https://<your-extension-id>.chromiumapp.org/
    ```
-6. Enable **Google** provider under **Authentication > Providers**
+5. Enable **Google** as an Authentication Provider under **Authentication > Providers**.
 
-### 4. Set Up Google OAuth
+### 4. Configure Google Cloud Console
 
-1. Go to [Google Cloud Console](https://console.cloud.google.com)
-2. Create OAuth 2.0 credentials
-3. Add the Supabase callback URL as an authorized redirect URI
-4. Copy the Client ID to your Supabase Google provider settings
+1. Navigate to the [Google Cloud Console](https://console.cloud.google.com).
+2. Create a new OAuth 2.0 Web Client credential.
+3. Add the Supabase Auth callback URL to the authorized redirect URIs.
+4. Input the Client ID and Client Secret into the Supabase Google authentication settings.
 
 ### 5. Build the Extension
 
 ```bash
+# Compile for production
 npm run build
 ```
 
+This compiles your extension code and packages it into the `/dist` directory.
+
 ### 6. Load in Chrome
 
-1. Open `chrome://extensions/`
-2. Enable **Developer mode**
-3. Click **Load unpacked**
-4. Select the `dist` folder
+1. Open **Google Chrome** and navigate to `chrome://extensions/`.
+2. Enable **Developer mode** (toggle in the top-right corner).
+3. Click **Load unpacked** in the top-left corner.
+4. Select the `dist/` directory inside the project folder.
+5. Pin **RecordX** to your browser toolbar!
 
-### 7. Development Mode
-
-For development with hot reload:
-
-```bash
-npm run dev
-```
-
-Then load the extension from the generated `dist` directory.
+---
 
 ## 📖 Recording Modes
 
-| Mode | Screen | Microphone | System Audio | Transcription |
-|------|:------:|:----------:|:------------:|:-------------:|
-| Screen Only | ✅ | ❌ | ❌ | ❌ |
-| Screen + Mic | ✅ | ✅ | ❌ | ✅ |
-| Screen + Mic + System | ✅ | ✅ | ✅ | ✅ |
-| Screen + System | ✅ | ❌ | ✅ | ❌ |
+| Mode | Screen | Microphone | System Audio | Transcription | Audio Treatment |
+|------|:------:|:----------:|:------------:|:-------------:|:----------------|
+| **Screen Only** | ✅ | ❌ | ❌ | ❌ | - |
+| **Screen + Mic** | ✅ | ✅ | ❌ | ✅ | Mic only |
+| **Screen + Mic + System** | ✅ | ✅ | ✅ | ✅ | mixed streams, no system DSP |
+| **Screen + System** | ✅ | ❌ | ✅ | ❌ | No system DSP (unmuffled) |
 
-> **Note:** Transcription is only available for modes that include microphone input, as Web Speech API requires mic access.
+> **Echo Cancellation & Noise Suppression Warning:** Standard display capture audio can sound muffled because Chrome applies microphone filters by default. RecordX disables echo cancellation and auto gain control on system captures, guaranteeing crystal-clear program sounds.
+
+---
 
 ## 📁 Project Structure
 
 ```
 RecordX/
-├── manifest.json           # Chrome Extension Manifest V3
-├── vite.config.js          # Build configuration
-├── package.json
-├── .env.example
+├── manifest.json            # Chrome MV3 manifest
+├── vite.config.js           # Vite compile configuration with CRXJS
+├── package.json             # Core dependency packages
+├── .env.example             # Env variables template
 ├── src/
-│   ├── background/         # Service worker (orchestration)
-│   ├── offscreen/          # Offscreen doc (MediaRecorder)
-│   ├── popup/              # Extension popup UI
-│   ├── pages/              # Full-page views (history, MoM)
-│   ├── lib/                # Core modules
-│   │   ├── supabase.js     # Supabase client
-│   │   ├── auth.js         # OAuth flow
-│   │   ├── storage.js      # File upload/download
-│   │   ├── database.js     # DB operations
-│   │   ├── recorder.js     # State machine
-│   │   ├── transcriber.js  # Speech-to-text
-│   │   └── mom-generator.js # MoM AI generation
-│   ├── utils/              # Constants & helpers
-│   └── assets/             # Icons & logo
+│   ├── background/
+│   │   └── service-worker.js # Main background orchestration and Auth Flow
+│   ├── offscreen/
+│   │   ├── offscreen.html
+│   │   └── offscreen.js      # Web Audio mixer & MediaRecorder engine
+│   ├── popup/
+│   │   ├── popup.html
+│   │   ├── popup.css         # Glassmorphism dark-mode popup
+│   │   └── popup.js          # Recording control dashboard
+│   ├── pages/
+│   │   ├── history.html / js / css  # Sleek monochrome recordings history board
+│   │   └── mom.html / js / css      # Luxury monochrome editorial MoM board
+│   ├── lib/
+│   │   ├── auth.js          # Background PKCE sign-in
+│   │   ├── database.js      # Recording / Transcript / MoM database queries
+│   │   ├── storage.js       # Signed URL generation and file uploading
+│   │   ├── recorder.js      # Orchestrated State Machine
+│   │   ├── transcriber.js   # Offscreen speech recognizing
+│   │   └── mom-generator.js # OpenAI prompt engineering
+│   ├── utils/
+│   │   ├── constants.js
+│   │   └── helpers.js       # IndexedDB helpers & visual formatting
+│   └── assets/
+│       ├── logo.svg
+│       └── icons/           # Required size resolutions (16, 32, 48, 128)
 └── supabase/
-    └── schema.sql          # Database schema
+    └── schema.sql           # Complete schema setup & RLS guidelines
 ```
 
-## ⚠️ Known Limitations
-
-- **System audio capture** depends on OS support (Windows/ChromeOS best supported)
-- **Web Speech API** requires internet connection and only works with microphone input
-- **Transcription accuracy** varies by language and audio quality
-- **Large recordings** (>50MB) may take time to upload
+---
 
 ## 📄 License
 
-MIT
-# recordx
+MIT License.
