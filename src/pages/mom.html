@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RecordX - Minutes of Meeting</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="mom.css">
+</head>
+<body>
+  <div class="page">
+    <!-- Header -->
+    <header class="page-header">
+      <div class="page-header__left">
+        <div class="page-header__logo">
+          <svg width="28" height="28" viewBox="0 0 64 64" fill="none">
+            <defs>
+              <linearGradient id="mLogoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" style="stop-color:#ffffff"/>
+                <stop offset="100%" style="stop-color:#7a7a7a"/>
+              </linearGradient>
+            </defs>
+            <circle cx="32" cy="32" r="12" fill="url(#mLogoGrad)"/>
+            <polygon points="28,24 28,40 42,32" fill="white"/>
+          </svg>
+        </div>
+        <h1 class="page-header__title">Minutes of Meeting</h1>
+      </div>
+      <div class="page-header__actions">
+        <button id="btn-generate-ai" class="btn btn--accent" type="button">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2l3 7h7l-5.5 4 2 7L12 16l-6.5 4 2-7L2 9h7z"/>
+          </svg>
+          Generate with AI
+        </button>
+        <div class="export-group">
+          <button id="btn-export-pdf" class="btn btn--secondary" type="button">Export PDF</button>
+          <button id="btn-export-md" class="btn btn--secondary" type="button">Export MD</button>
+          <button id="btn-copy" class="btn btn--secondary" type="button">Copy</button>
+          <button id="btn-save" class="btn btn--primary" type="button">Save</button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Loading State -->
+    <div id="loading-state" class="state-container">
+      <div class="spinner"></div>
+      <p>Loading transcript...</p>
+    </div>
+
+    <!-- AI Generation Progress -->
+    <div id="ai-progress" class="ai-progress hidden">
+      <div class="ai-progress__content">
+        <div class="spinner spinner--small"></div>
+        <span>AI is generating your meeting notes...</span>
+      </div>
+    </div>
+
+    <!-- MoM Editor -->
+    <main id="mom-editor" class="mom-editor hidden">
+      <!-- Meeting Title -->
+      <div class="form-group form-group--hero">
+        <input id="mom-title" type="text" class="input input--hero" placeholder="Meeting Title" />
+      </div>
+
+      <!-- Meeting Info Row -->
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Date</label>
+          <input id="mom-date" type="date" class="input" />
+        </div>
+        <div class="form-group form-group--flex">
+          <label class="form-label">Participants</label>
+          <input id="mom-participants" type="text" class="input" placeholder="e.g. John, Jane, Bob (comma-separated)" />
+        </div>
+      </div>
+
+      <!-- Summary -->
+      <div class="form-group">
+        <label class="form-label">Summary</label>
+        <textarea id="mom-summary" class="textarea" rows="3" placeholder="Brief summary of the meeting..."></textarea>
+      </div>
+
+      <!-- Agenda Items -->
+      <div class="section-block">
+        <div class="section-block__header">
+          <h2 class="section-block__title">Agenda & Discussion</h2>
+          <button id="btn-add-agenda" class="btn btn--small btn--ghost" type="button">+ Add Item</button>
+        </div>
+        <div id="agenda-container" class="agenda-container"></div>
+      </div>
+
+      <!-- Next Steps -->
+      <div class="section-block">
+        <div class="section-block__header">
+          <h2 class="section-block__title">Next Steps</h2>
+          <button id="btn-add-step" class="btn btn--small btn--ghost" type="button">+ Add Step</button>
+        </div>
+        <div id="next-steps-container" class="list-container"></div>
+      </div>
+
+      <!-- Notes -->
+      <div class="form-group">
+        <label class="form-label">Additional Notes</label>
+        <textarea id="mom-notes" class="textarea" rows="3" placeholder="Any additional notes or observations..."></textarea>
+      </div>
+
+      <!-- Original Transcript (collapsible) -->
+      <details class="transcript-details">
+        <summary class="transcript-summary">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+          </svg>
+          Original Transcript
+        </summary>
+        <div id="original-transcript" class="transcript-body">
+          <em class="text-muted">No transcript available</em>
+        </div>
+      </details>
+    </main>
+  </div>
+
+  <script type="module" src="mom.js"></script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+{
+  "name": "recordx",
+  "version": "1.0.0",
+  "description": "RecordX - Chrome Extension Screen Recorder with Supabase Integration",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.49.0"
+  },
+  "devDependencies": {
+    "@crxjs/vite-plugin": "^2.0.0-beta.28",
+    "vite": "^5.4.0"
+  }
+}
