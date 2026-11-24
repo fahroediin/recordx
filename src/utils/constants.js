@@ -81,6 +81,9 @@ export const TARGET = {
   POPUP: 'popup',
 };
 
+// Live audio level, sent from the offscreen document to the popup
+export const LEVEL_CHANNEL = 'recordx-level';
+
 // ─── Supabase Tables ──────────────────────────────────────────
 export const TABLES = {
   RECORDINGS: 'recordings',

@@ -4,9 +4,11 @@ import {
   RECORDING_MODE,
   MEDIA_CONSTRAINTS,
   RECORDER_CONFIG,
+  LEVEL_CHANNEL,
 } from '../utils/constants.js';
 import { Transcriber } from '../lib/transcriber.js';
-import { saveBlobToIndexedDB } from '../utils/helpers.js';
+import { saveLocalRecording } from '../lib/local-store.js';
+import { withWebmDuration } from '../lib/webm-duration.js';
 
 // ─── State ───────────────────────────────────────────────────
 let mediaRecorder = null;
@@ -16,8 +18,15 @@ let micStream = null;
 let audioContext = null;
 let combinedStream = null;
 let startTime = 0;
+let pausedMs = 0;
+let pauseStart = 0;
 let currentMode = null;
+let currentLanguage = null;
 let transcriber = null;
+let levelTimer = null;
+let stopped = null;
+let finalizing = null;
+const levelChannel = new BroadcastChannel(LEVEL_CHANNEL);
 
 // ─── Message Handler ─────────────────────────────────────────
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -53,8 +62,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // ─── Start Recording ─────────────────────────────────────────
 async function handleStartRecording({ mode, language }) {
+  if (mediaRecorder) return { success: false, error: 'A recording is already running' };
+
   currentMode = mode;
+  currentLanguage = language || 'id-ID';
   recordedChunks = [];
+  finalizing = null;
 
   try {
     // 1. Get display stream (screen capture)
@@ -88,9 +101,11 @@ async function handleStartRecording({ mode, language }) {
       }
     };
 
-    mediaRecorder.onstop = async () => {
-      await finalizeRecording();
-    };
+    // Fires for our own stop() and when Chrome ends the capture
+    stopped = new Promise((resolve) => {
+      mediaRecorder.onstop = resolve;
+    });
+    stopped.then(finalizeOnce);
 
     mediaRecorder.onerror = (event) => {
       console.error('[Offscreen] MediaRecorder error:', event.error);
@@ -104,21 +119,22 @@ async function handleStartRecording({ mode, language }) {
     // Handle user stopping the screen share via the browser's built-in UI
     displayStream.getVideoTracks().forEach((track) => {
       track.addEventListener('ended', () => {
-        if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-          handleStopRecording();
-        }
+        handleStopRecording();
       });
     });
 
     startTime = Date.now();
+    pausedMs = 0;
+    pauseStart = 0;
     mediaRecorder.start(RECORDER_CONFIG.TIMESLICE_MS);
+    startLevelMeter(combinedStream);
 
     // Start transcription if mode includes mic and Web Speech API is supported
     const hasMic = mode === RECORDING_MODE.SCREEN_MIC || mode === RECORDING_MODE.SCREEN_MIC_SYSTEM;
     if (hasMic && Transcriber.isSupported()) {
       transcriber = new Transcriber();
       transcriber.init({
-        language: language || 'id-ID',
+        language: currentLanguage,
         onResult: (segment) => {
           chrome.runtime.sendMessage({
             type: MSG.TRANSCRIPT_RESULT,
@@ -151,36 +167,38 @@ async function handleStartRecording({ mode, language }) {
   } catch (err) {
     console.error('[Offscreen] Start recording error:', err);
     cleanup();
-    return { success: false, error: err.message };
+    return { success: false, error: describeStartError(err) };
   }
+}
+
+// ─── Start Errors ────────────────────────────────────────────
+function describeStartError(err) {
+  if (err.step === 'microphone') {
+    return err.name === 'NotFoundError'
+      ? 'No microphone was found.'
+      : `The microphone could not be used: ${err.message}`;
+  }
+  if (err.name === 'NotAllowedError') return 'Screen sharing was cancelled.';
+  return err.message;
 }
 
 // ─── Stop Recording ──────────────────────────────────────────
 async function handleStopRecording() {
-  if (!mediaRecorder || mediaRecorder.state === 'inactive') {
+  if (!mediaRecorder) {
     return { success: false, error: 'No active recording' };
   }
-
-  return new Promise((resolve) => {
-    mediaRecorder.onstop = async () => {
-      await finalizeRecording();
-      resolve({ success: true });
-    };
-    mediaRecorder.stop();
-  });
+  if (mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+  await finalizeOnce();
+  return { success: true };
 }
 
 // ─── Pause Recording ─────────────────────────────────────────
 function handlePauseRecording() {
   if (mediaRecorder && mediaRecorder.state === 'recording') {
     mediaRecorder.pause();
-    if (transcriber) {
-      transcriber.stop();
-    }
-    chrome.runtime.sendMessage({
-      type: MSG.RECORDING_PAUSED,
-      target: TARGET.SERVICE_WORKER,
-    });
+    pauseStart = Date.now();
+    transcriber?.stop();
+    notify(MSG.RECORDING_PAUSED);
   }
 }
 
@@ -188,14 +206,15 @@ function handlePauseRecording() {
 function handleResumeRecording() {
   if (mediaRecorder && mediaRecorder.state === 'paused') {
     mediaRecorder.resume();
-    if (transcriber) {
-      transcriber.start();
-    }
-    chrome.runtime.sendMessage({
-      type: MSG.RECORDING_RESUMED,
-      target: TARGET.SERVICE_WORKER,
-    });
+    pausedMs += Date.now() - pauseStart;
+    pauseStart = 0;
+    transcriber?.start();
+    notify(MSG.RECORDING_RESUMED);
   }
+}
+
+function notify(type, data) {
+  chrome.runtime.sendMessage({ type, target: TARGET.SERVICE_WORKER, data }).catch(() => {});
 }
 
 // ─── Get Display Stream ──────────────────────────────────────
@@ -215,8 +234,9 @@ async function getDisplayStream(mode) {
       echoCancellation: false,
       noiseSuppression: false,
       autoGainControl: false,
-      systemAudio: 'include',
     } : false,
+    // Offer the audio checkbox for whole screens and windows, not only tabs
+    ...(needsSystemAudio && { systemAudio: 'include', windowAudio: 'system' }),
   };
 
   return await navigator.mediaDevices.getDisplayMedia(constraints);
@@ -224,15 +244,20 @@ async function getDisplayStream(mode) {
 
 // ─── Get Microphone Stream ───────────────────────────────────
 async function getMicStream() {
-  return await navigator.mediaDevices.getUserMedia({
-    audio: {
-      echoCancellation: MEDIA_CONSTRAINTS.AUDIO.echoCancellation,
-      noiseSuppression: MEDIA_CONSTRAINTS.AUDIO.noiseSuppression,
-      autoGainControl: MEDIA_CONSTRAINTS.AUDIO.autoGainControl,
-      sampleRate: MEDIA_CONSTRAINTS.AUDIO.sampleRate,
-    },
-    video: false,
-  });
+  try {
+    return await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: MEDIA_CONSTRAINTS.AUDIO.echoCancellation,
+        noiseSuppression: MEDIA_CONSTRAINTS.AUDIO.noiseSuppression,
+        autoGainControl: MEDIA_CONSTRAINTS.AUDIO.autoGainControl,
+        sampleRate: MEDIA_CONSTRAINTS.AUDIO.sampleRate,
+      },
+      video: false,
+    });
+  } catch (err) {
+    err.step = 'microphone';
+    throw err;
+  }
 }
 
 // ─── Build Combined Stream ───────────────────────────────────
@@ -247,6 +272,7 @@ async function buildCombinedStream(mode, display, mic) {
   // If we need to mix multiple audio sources, use Web Audio API
   if (hasDisplayAudio && hasMicAudio) {
     audioContext = new AudioContext({ sampleRate: 48000 });
+    await audioContext.resume();
 
     const displaySource = audioContext.createMediaStreamSource(
       new MediaStream(displayAudioTracks)
@@ -293,36 +319,66 @@ async function buildCombinedStream(mode, display, mic) {
   return new MediaStream(videoTracks);
 }
 
+// ─── Audio Level Meter ───────────────────────────────────────
+// Lets the popup show the sound that is really being recorded
+function startLevelMeter(stream) {
+  if (stream.getAudioTracks().length === 0) return;
+  audioContext ||= new AudioContext({ sampleRate: 48000 });
+  audioContext.resume();
+
+  const analyser = audioContext.createAnalyser();
+  analyser.fftSize = 2048;
+  audioContext
+    .createMediaStreamSource(new MediaStream(stream.getAudioTracks()))
+    .connect(analyser);
+
+  const samples = new Float32Array(analyser.fftSize);
+  levelTimer = setInterval(() => {
+    analyser.getFloatTimeDomainData(samples);
+    let sum = 0;
+    for (const s of samples) sum += s * s;
+    levelChannel.postMessage(Math.sqrt(sum / samples.length));
+  }, 100);
+}
+
 // ─── Finalize Recording ──────────────────────────────────────
+function finalizeOnce() {
+  finalizing ||= finalizeRecording();
+  return finalizing;
+}
+
 async function finalizeRecording() {
-  const duration = Date.now() - startTime;
-  const mimeType = mediaRecorder?.mimeType || RECORDER_CONFIG.MIME_TYPE;
-  const blob = new Blob(recordedChunks, { type: mimeType });
+  const recorder = mediaRecorder;
+  if (pauseStart) pausedMs += Date.now() - pauseStart;
+  const duration = Math.max(0, Date.now() - startTime - pausedMs);
 
-  const dbKey = `recording_${Date.now()}`;
   try {
-    // Save blob directly to IndexedDB for zero-copy sharing with service worker
-    await saveBlobToIndexedDB(dbKey, blob);
+    // The last chunk arrives just before the stop event
+    await stopped;
+    await transcriber?.stopAndFlush();
 
-    // Notify service worker with the recording metadata and DB key
-    chrome.runtime.sendMessage({
-      type: MSG.RECORDING_COMPLETE,
-      target: TARGET.SERVICE_WORKER,
-      data: {
-        dbKey,
-        mimeType,
-        duration,
+    const raw = new Blob(recordedChunks, { type: recorder.mimeType || RECORDER_CONFIG.MIME_TYPE });
+    if (raw.size === 0) throw new Error('Nothing was recorded');
+    const blob = await withWebmDuration(raw, duration);
+
+    const segments = transcriber?.getSegments() || [];
+    // Saved here, before any upload, so the recording cannot be lost
+    const recording = await saveLocalRecording(
+      {
+        title: `Recording ${new Date(startTime).toLocaleString('id-ID')}`,
         mode: currentMode,
-        fileSize: blob.size,
+        duration_ms: duration,
+        mime_type: blob.type,
+        transcript: segments.length
+          ? { content: segments.map((s) => s.text).join(' '), language: currentLanguage, segments }
+          : null,
       },
-    });
+      blob
+    );
+    notify(MSG.RECORDING_COMPLETE, recording);
   } catch (err) {
-    console.error('[Offscreen] Failed to save recording to IndexedDB:', err);
-    chrome.runtime.sendMessage({
-      type: MSG.RECORDING_ERROR,
-      target: TARGET.SERVICE_WORKER,
-      data: { error: 'Failed to save recording data to internal database' },
-    });
+    console.error('[Offscreen] Failed to save recording:', err);
+    notify(MSG.RECORDING_ERROR, { error: `The recording could not be saved: ${err.message}` });
   }
 
   cleanup();
@@ -348,6 +404,9 @@ function getSupportedMimeType() {
 
 // ─── Cleanup ─────────────────────────────────────────────────
 function cleanup() {
+  clearInterval(levelTimer);
+  levelTimer = null;
+
   // Stop all tracks
   if (displayStream) {
     displayStream.getTracks().forEach((t) => t.stop());

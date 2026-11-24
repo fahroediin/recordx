@@ -12,46 +12,8 @@
 <body>
   <div id="app" class="app">
 
-    <!-- ═══ Auth Screen ═══ -->
-    <div id="auth-screen" class="screen screen--auth">
-      <div class="auth-container">
-        <div class="logo-container">
-          <div class="logo-glow"></div>
-          <div class="logo-icon">
-            <svg width="64" height="64" viewBox="0 0 64 64" fill="none">
-              <defs>
-                <linearGradient id="logoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                  <stop offset="0%" style="stop-color:#FF6B6B"/>
-                  <stop offset="50%" style="stop-color:#EE5A24"/>
-                  <stop offset="100%" style="stop-color:#F0932B"/>
-                </linearGradient>
-              </defs>
-              <circle cx="32" cy="32" r="28" fill="url(#logoGrad)" opacity="0.15"/>
-              <circle cx="32" cy="32" r="20" fill="url(#logoGrad)" opacity="0.3"/>
-              <circle cx="32" cy="32" r="12" fill="url(#logoGrad)"/>
-              <polygon points="28,24 28,40 42,32" fill="white"/>
-            </svg>
-          </div>
-        </div>
-        <h1 class="auth-title">RecordX</h1>
-        <p class="auth-subtitle">Screen recorder with transcription &amp; meeting notes</p>
-
-        <button id="btn-google-login" class="btn btn--google" type="button">
-          <svg class="btn__icon" width="20" height="20" viewBox="0 0 24 24">
-            <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/>
-            <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
-            <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
-            <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
-          </svg>
-          <span>Sign in with Google</span>
-        </button>
-
-        <p class="auth-footer">Your recordings are saved securely in the cloud</p>
-      </div>
-    </div>
-
     <!-- ═══ Main Screen ═══ -->
-    <div id="main-screen" class="screen screen--main hidden">
+    <div id="main-screen" class="screen screen--main">
       
       <!-- Header -->
       <header class="header">
@@ -77,7 +39,16 @@
               <polyline points="12 6 12 12 16 14"/>
             </svg>
           </button>
-          <div id="user-menu" class="user-menu">
+          <button id="btn-google-login" class="signin-btn hidden" type="button" title="Optional: upload recordings to your account">
+            <svg class="btn__icon" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/>
+              <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+              <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
+              <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+            </svg>
+            <span id="login-label">Sign in</span>
+          </button>
+          <div id="user-menu" class="user-menu hidden">
             <button id="btn-user" class="avatar-btn" title="Account" type="button">
               <img id="user-avatar" class="avatar" src="" alt="User" />
               <span id="user-initials" class="avatar-initials"></span>
@@ -100,6 +71,8 @@
           </div>
         </div>
       </header>
+
+      <p id="notice" class="notice hidden" role="alert"></p>
 
       <!-- Recording Mode Selector -->
       <section id="mode-section" class="section section--modes">
@@ -218,13 +191,15 @@
       <section id="done-section" class="section section--done hidden">
         <div class="done-content">
           <div class="done-icon">✅</div>
-          <p class="done-text">Recording saved!</p>
+          <p id="done-text" class="done-text">Recording saved</p>
+          <p id="done-warning" class="done-warning hidden"></p>
           <div class="done-meta">
             <span id="done-duration"></span>
             <span id="done-size"></span>
           </div>
           <div class="done-actions">
-            <button id="btn-view-history" class="btn btn--secondary" type="button">View History</button>
+            <button id="btn-download" class="btn btn--secondary" type="button">Download</button>
+            <button id="btn-view-history" class="btn btn--secondary" type="button">History</button>
             <button id="btn-new-recording" class="btn btn--primary" type="button">New Recording</button>
           </div>
         </div>

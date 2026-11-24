@@ -28,6 +28,7 @@
     "activeTab",
     "identity",
     "storage",
+    "unlimitedStorage",
     "tabs"
   ],
   "host_permissions": [

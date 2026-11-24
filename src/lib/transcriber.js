@@ -1,4 +1,4 @@
-import { MSG, TARGET, TRANSCRIPTION } from '../utils/constants.js';
+import { TRANSCRIPTION } from '../utils/constants.js';
 
 /**
  * Web Speech API Transcription Engine
@@ -19,6 +19,7 @@ export class Transcriber {
     this.onStatusChange = null;
     this._restartTimeout = null;
     this._startTime = 0;
+    this._onEnded = null;
   }
 
   /**
@@ -81,8 +82,8 @@ export class Transcriber {
       return;
     }
 
-    this.segments = [];
-    this._startTime = Date.now();
+    // Keep earlier segments: start() also resumes after a pause
+    if (!this._startTime) this._startTime = Date.now();
 
     try {
       this.recognition.start();
@@ -113,6 +114,28 @@ export class Transcriber {
     }
 
     this.onStatusChange?.('stopped');
+  }
+
+  /**
+   * Stop and wait for the sentence still being recognised
+   * @param {number} [timeoutMs=1500]
+   * @returns {Promise<void>}
+   */
+  stopAndFlush(timeoutMs = 1500) {
+    const wasListening = this.isListening;
+    return new Promise((resolve) => {
+      if (!this.recognition || !wasListening) {
+        this.stop();
+        resolve();
+        return;
+      }
+      const timer = setTimeout(resolve, timeoutMs);
+      this._onEnded = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      this.stop();
+    });
   }
 
   /**
@@ -148,21 +171,6 @@ export class Transcriber {
     return [...this.segments];
   }
 
-  /**
-   * Send transcript to service worker
-   */
-  sendToServiceWorker() {
-    if (this.segments.length === 0) return;
-
-    this.segments.forEach((segment) => {
-      chrome.runtime.sendMessage({
-        type: MSG.TRANSCRIPT_RESULT,
-        target: TARGET.SERVICE_WORKER,
-        data: segment,
-      });
-    });
-  }
-
   // ─── Private Methods ────────────────────────────────────────
 
   _handleResult(event) {
@@ -182,13 +190,6 @@ export class Transcriber {
 
         this.segments.push(segment);
         this.onResult?.(segment);
-
-        // Also send to service worker for storage
-        chrome.runtime.sendMessage({
-          type: MSG.TRANSCRIPT_RESULT,
-          target: TARGET.SERVICE_WORKER,
-          data: segment,
-        }).catch(() => {});
       } else {
         // Interim result
         this.onInterim?.({
@@ -236,6 +237,8 @@ export class Transcriber {
         }
       }, 300);
     } else {
+      this._onEnded?.();
+      this._onEnded = null;
       this.onStatusChange?.('stopped');
     }
   }

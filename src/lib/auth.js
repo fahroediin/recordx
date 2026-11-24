@@ -1,4 +1,6 @@
-import { getSupabase } from './supabase.js';
+import { getSupabase, isSupabaseReachable } from './supabase.js';
+
+const SESSION_TIMEOUT_MS = 4000;
 
 /**
  * Get the extension's redirect URL for OAuth
@@ -18,6 +20,15 @@ function getRedirectURL() {
 export async function signInWithGoogle() {
   const supabase = getSupabase();
   if (!supabase) return { data: null, error: { message: 'Supabase not configured' } };
+
+  if (!(await isSupabaseReachable())) {
+    return {
+      data: null,
+      error: {
+        message: 'The sign-in server cannot be reached. You can keep recording; recordings are saved on this computer.',
+      },
+    };
+  }
 
   const redirectUrl = getRedirectURL();
 
@@ -113,7 +124,14 @@ export async function getSession() {
   const supabase = getSupabase();
   if (!supabase) return { data: { session: null }, error: null };
 
-  return await supabase.auth.getSession();
+  // Refreshing an expired session retries for a long time when the server is down.
+  // Recording must not wait for that.
+  return Promise.race([
+    supabase.auth.getSession().catch((error) => ({ data: { session: null }, error })),
+    new Promise((resolve) =>
+      setTimeout(() => resolve({ data: { session: null }, error: null }), SESSION_TIMEOUT_MS)
+    ),
+  ]);
 }
 
 /**

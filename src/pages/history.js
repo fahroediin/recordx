@@ -1,6 +1,10 @@
-import { getRecordings, deleteRecording, getTranscript } from '../lib/database.js';
-import { getRecordingUrl, deleteRecordingFile, downloadRecording } from '../lib/storage.js';
-import { getSession } from '../lib/auth.js';
+import {
+  listRecordings,
+  removeRecording,
+  getTranscript,
+  getPlaybackUrl,
+  downloadToDisk,
+} from '../lib/library.js';
 import { RECORDING_MODE_LABELS, RECORDING_MODE_ICONS } from '../utils/constants.js';
 import { formatDuration, formatDate, formatFileSize, debounce } from '../utils/helpers.js';
 
@@ -48,17 +52,6 @@ const PAGE_SIZE = 20;
 // INITIALIZATION
 // ═══════════════════════════════════════════════════════════════
 async function init() {
-  const { data } = await getSession();
-  if (!data?.session) {
-    // Redirect to popup if not authenticated
-    els.loadingState.innerHTML = `
-      <div class="empty-icon">🔒</div>
-      <h2 class="empty-title">Please sign in</h2>
-      <p class="empty-desc">Open the RecordX extension popup to sign in first</p>
-    `;
-    return;
-  }
-
   bindEvents();
   await loadRecordings();
 }
@@ -123,7 +116,7 @@ async function loadRecordings(append = false) {
   }
 
   const search = els.searchInput.value.trim();
-  const { data, count, error } = await getRecordings({
+  const { data, count, error } = await listRecordings({
     page: currentPage,
     limit: PAGE_SIZE,
     search: search || undefined,
@@ -132,8 +125,8 @@ async function loadRecordings(append = false) {
   els.loadingState.classList.add('hidden');
 
   if (error) {
+    // Cloud recordings may be unavailable; still show what is on this computer
     console.error('Failed to load recordings:', error);
-    return;
   }
 
   totalCount = count;
@@ -168,8 +161,8 @@ function renderRecordings(append = false) {
 
   const fragment = document.createDocumentFragment();
 
-  const startIdx = append ? recordings.length - PAGE_SIZE : 0;
-  const renderSet = append ? recordings.slice(startIdx) : recordings;
+  const shown = els.recordingsGrid.children.length;
+  const renderSet = append ? recordings.slice(shown) : recordings;
 
   renderSet.forEach((rec) => {
     const card = createRecordingCard(rec);
@@ -203,7 +196,7 @@ function createRecordingCard(recording) {
       <div class="recording-card__duration">${duration}</div>
     </div>
     <div class="recording-card__body">
-      <div class="recording-card__title">${recording.title || 'Untitled Recording'}</div>
+      <div class="recording-card__title"></div>
       <div class="recording-card__meta">
         <span class="recording-card__mode">${modeIcon} ${modeLabel}</span>
         <span>${date}</span>
@@ -220,6 +213,8 @@ function createRecordingCard(recording) {
     </div>
   `;
 
+  card.querySelector('.recording-card__title').textContent = recording.title || 'Untitled Recording';
+
   // Play click
   card.querySelector('.recording-card__preview').addEventListener('click', () => {
     openPlayerModal(recording);
@@ -229,7 +224,11 @@ function createRecordingCard(recording) {
   card.querySelector('[data-action="delete"]').addEventListener('click', async (e) => {
     e.stopPropagation();
     if (confirm('Delete this recording? This cannot be undone.')) {
-      await handleDelete(recording);
+      const { error } = await removeRecording(recording);
+      if (error) {
+        alert('Delete failed: ' + error.message);
+        return;
+      }
       card.remove();
 
       recordings = recordings.filter((r) => r.id !== recording.id);
@@ -250,39 +249,30 @@ async function openPlayerModal(recording) {
   currentRecording = recording;
   els.playerTitle.textContent = recording.title || 'Recording';
 
-  // Get signed URL for playback
-  const { data, error } = await getRecordingUrl(recording.storage_path);
+  const { data, error } = await getPlaybackUrl(recording);
   if (error) {
     alert('Failed to load recording: ' + error.message);
     return;
   }
 
-  els.videoPlayer.src = data.signedUrl;
+  els.videoPlayer.src = data;
   els.playerModal.classList.remove('hidden');
 }
 
 function closePlayerModal() {
   els.playerModal.classList.add('hidden');
   els.videoPlayer.pause();
-  els.videoPlayer.src = '';
+  if (els.videoPlayer.src.startsWith('blob:')) URL.revokeObjectURL(els.videoPlayer.src);
+  els.videoPlayer.removeAttribute('src');
+  els.videoPlayer.load();
   currentRecording = null;
 }
 
 async function handleDownload() {
   if (!currentRecording) return;
 
-  const { data, error } = await downloadRecording(currentRecording.storage_path);
-  if (error) {
-    alert('Download failed: ' + error.message);
-    return;
-  }
-
-  const url = URL.createObjectURL(data);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = currentRecording.title + '.webm';
-  a.click();
-  URL.revokeObjectURL(url);
+  const { error } = await downloadToDisk(currentRecording);
+  if (error) alert('Download failed: ' + error.message);
 }
 
 async function handleViewTranscript() {
@@ -310,13 +300,6 @@ async function handleCopyTranscript() {
   setTimeout(() => {
     els.btnCopyTranscript.textContent = 'Copy to Clipboard';
   }, 2000);
-}
-
-async function handleDelete(recording) {
-  // Delete from storage
-  await deleteRecordingFile(recording.storage_path);
-  // Delete from database
-  await deleteRecording(recording.id);
 }
 
 function handleGenerateMoM() {

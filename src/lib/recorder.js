@@ -104,6 +104,23 @@ export class RecordingStateMachine {
   }
 
   /**
+   * Full snapshot for storage, so the state outlives the service worker
+   * @returns {object}
+   */
+  serialize() {
+    const { state, mode, startTime, pausedDuration, pauseStartTime } = this;
+    return { state, mode, startTime, pausedDuration, pauseStartTime };
+  }
+
+  /**
+   * Restore a snapshot made by serialize()
+   * @param {object} snapshot
+   */
+  hydrate(snapshot) {
+    Object.assign(this, snapshot);
+  }
+
+  /**
    * Check if a state transition is valid
    * @private
    */
@@ -111,8 +128,9 @@ export class RecordingStateMachine {
     const transitions = {
       [RECORDING_STATE.IDLE]: [RECORDING_STATE.REQUESTING],
       [RECORDING_STATE.REQUESTING]: [RECORDING_STATE.RECORDING, RECORDING_STATE.ERROR, RECORDING_STATE.IDLE],
-      [RECORDING_STATE.RECORDING]: [RECORDING_STATE.PAUSED, RECORDING_STATE.STOPPING, RECORDING_STATE.ERROR],
-      [RECORDING_STATE.PAUSED]: [RECORDING_STATE.RECORDING, RECORDING_STATE.STOPPING, RECORDING_STATE.ERROR],
+      // PROCESSING straight from RECORDING/PAUSED: the user ended sharing from Chrome's own bar
+      [RECORDING_STATE.RECORDING]: [RECORDING_STATE.PAUSED, RECORDING_STATE.STOPPING, RECORDING_STATE.PROCESSING, RECORDING_STATE.ERROR],
+      [RECORDING_STATE.PAUSED]: [RECORDING_STATE.RECORDING, RECORDING_STATE.STOPPING, RECORDING_STATE.PROCESSING, RECORDING_STATE.ERROR],
       [RECORDING_STATE.STOPPING]: [RECORDING_STATE.PROCESSING, RECORDING_STATE.ERROR],
       [RECORDING_STATE.PROCESSING]: [RECORDING_STATE.UPLOADING, RECORDING_STATE.ERROR, RECORDING_STATE.DONE],
       [RECORDING_STATE.UPLOADING]: [RECORDING_STATE.DONE, RECORDING_STATE.ERROR],

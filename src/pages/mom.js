@@ -1,5 +1,4 @@
-import { getSession } from '../lib/auth.js';
-import { getTranscript, getRecordingById, saveMoM, getMoM } from '../lib/database.js';
+import { getTranscript, getRecording, saveMoM, getMoM } from '../lib/library.js';
 import { generateMoM, isAIAvailable, getBlankTemplate, momToMarkdown } from '../lib/mom-generator.js';
 
 // ═══════════════════════════════════════════════════════════════
@@ -43,16 +42,6 @@ async function init() {
   // Get recording ID from URL
   const params = new URLSearchParams(window.location.search);
   recordingId = params.get('recording_id');
-
-  const { data } = await getSession();
-  if (!data?.session) {
-    els.loadingState.innerHTML = `
-      <div style="font-size:2rem">🔒</div>
-      <h2>Please sign in</h2>
-      <p style="color:var(--text-tertiary)">Open the RecordX extension popup to sign in first</p>
-    `;
-    return;
-  }
 
   // Check if AI is available
   if (!isAIAvailable()) {
@@ -103,7 +92,7 @@ async function loadData() {
     }
 
     // Load recording info
-    const { data: recording } = await getRecordingById(recordingId);
+    const { data: recording } = await getRecording(recordingId);
     if (recording && !currentMoM) {
       els.momTitle.value = recording.title || '';
     }

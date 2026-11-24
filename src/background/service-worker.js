@@ -1,331 +1,264 @@
-import { MSG, TARGET, RECORDING_STATE, RECORDING_MODE } from '../utils/constants.js';
+import { MSG, TARGET, RECORDING_STATE } from '../utils/constants.js';
 import { getRecorderState } from '../lib/recorder.js';
 import { signInWithGoogle, signOut, getSession } from '../lib/auth.js';
 import { uploadRecording } from '../lib/storage.js';
 import { createRecording, saveTranscript } from '../lib/database.js';
-import { generateFilename, getBlobFromIndexedDB, deleteBlobFromIndexedDB } from '../utils/helpers.js';
+import { getLocalBlob, deleteLocalRecording } from '../lib/local-store.js';
+import { generateFilename } from '../utils/helpers.js';
 
 // ─── State ───────────────────────────────────────────────────
+// Chrome stops an idle service worker after about 30 seconds, also while the
+// offscreen document is still recording. The state is kept in session storage
+// and restored before any message is handled.
+const STATE_KEY = 'recorder';
 const recorder = getRecorderState();
 let transcriptSegments = [];
+const ready = restoreState();
+
+async function restoreState() {
+  const { [STATE_KEY]: saved } = await chrome.storage.session.get(STATE_KEY);
+  if (!saved) return;
+
+  const active = [
+    RECORDING_STATE.REQUESTING,
+    RECORDING_STATE.RECORDING,
+    RECORDING_STATE.PAUSED,
+    RECORDING_STATE.STOPPING,
+  ].includes(saved.recorder.state);
+
+  // Without the offscreen document there is no recording left to control
+  if (active && (await hasOffscreenDocument())) {
+    recorder.hydrate(saved.recorder);
+    transcriptSegments = saved.transcriptSegments;
+  }
+}
+
+function saveState() {
+  return chrome.storage.session.set({
+    [STATE_KEY]: { recorder: recorder.serialize(), transcriptSegments },
+  });
+}
+
+function setState(state, extra) {
+  recorder.transition(state);
+  saveState();
+  broadcastState(extra);
+}
+
+/** Show the outcome in the popup, then get ready for the next recording */
+function finish(state, extra) {
+  setState(state, extra);
+  recorder.transition(RECORDING_STATE.IDLE);
+  saveState();
+}
 
 // ─── Message Router ──────────────────────────────────────────
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  // Only handle messages targeted at the service worker
-  if (message.target && message.target !== TARGET.SERVICE_WORKER) return false;
+  if (message.target !== TARGET.SERVICE_WORKER) return false;
 
-  switch (message.type) {
+  ready
+    .then(() => handleMessage(message))
+    .then((response) => sendResponse(response ?? { success: true }))
+    .catch((err) => {
+      console.error('[SW]', message.type, err);
+      sendResponse({ success: false, error: err.message });
+    });
+  return true; // Keep message channel open for async response
+});
+
+async function handleMessage({ type, data }) {
+  switch (type) {
     // === Recording Control (from Popup) ===
     case MSG.START_RECORDING:
-      handleStartRecording(message.data)
-        .then(sendResponse)
-        .catch((err) => sendResponse({ success: false, error: err.message }));
-      return true;
+      return handleStartRecording(data);
+
+    case MSG.STOP_RECORDING:
+      return handleStopRecording();
+
+    // The offscreen document confirms with RECORDING_PAUSED / RECORDING_RESUMED
+    case MSG.PAUSE_RECORDING:
+    case MSG.RESUME_RECORDING:
+      return sendToOffscreen(type);
 
     // === Auth (from Popup) ===
     case MSG.SIGN_IN:
-      signInWithGoogle()
-        .then(sendResponse)
-        .catch((err) => sendResponse({ success: false, error: err.message }));
-      return true;
+      return signInWithGoogle();
 
     case MSG.SIGN_OUT:
-      signOut()
-        .then(sendResponse)
-        .catch((err) => sendResponse({ success: false, error: err.message }));
-      return true;
-
-    case MSG.STOP_RECORDING:
-      handleStopRecording()
-        .then(sendResponse)
-        .catch((err) => sendResponse({ success: false, error: err.message }));
-      return true;
-
-    case MSG.PAUSE_RECORDING:
-      forwardToOffscreen(MSG.PAUSE_RECORDING);
-      recorder.transition(RECORDING_STATE.PAUSED);
-      broadcastState();
-      sendResponse({ success: true });
-      return false;
-
-    case MSG.RESUME_RECORDING:
-      forwardToOffscreen(MSG.RESUME_RECORDING);
-      recorder.transition(RECORDING_STATE.RECORDING);
-      broadcastState();
-      sendResponse({ success: true });
-      return false;
+      return signOut();
 
     // === Recording Events (from Offscreen) ===
     case MSG.RECORDING_STARTED:
-      recorder.mode = message.data.mode;
-      recorder.transition(RECORDING_STATE.RECORDING);
-      broadcastState();
-      return false;
+      recorder.mode = data.mode;
+      return setState(RECORDING_STATE.RECORDING);
 
     case MSG.RECORDING_PAUSED:
-      recorder.transition(RECORDING_STATE.PAUSED);
-      broadcastState();
-      return false;
+      return setState(RECORDING_STATE.PAUSED);
 
     case MSG.RECORDING_RESUMED:
-      recorder.transition(RECORDING_STATE.RECORDING);
-      broadcastState();
-      return false;
+      return setState(RECORDING_STATE.RECORDING);
 
     case MSG.RECORDING_COMPLETE:
-      handleRecordingComplete(message.data);
-      return false;
+      return handleRecordingComplete(data);
 
     case MSG.RECORDING_ERROR:
-      recorder.transition(RECORDING_STATE.ERROR);
-      broadcastState({ error: message.data.error });
-      setTimeout(() => {
-        recorder.transition(RECORDING_STATE.IDLE);
-        broadcastState();
-      }, 3000);
-      return false;
+      return finish(RECORDING_STATE.ERROR, { error: data.error });
 
-    // === Transcription (from Offscreen/Popup/Content) ===
+    // === Transcription (from Offscreen) ===
     case MSG.TRANSCRIPT_RESULT:
-      transcriptSegments.push(message.data);
-      // Forward to popup if active
-      chrome.runtime.sendMessage({
-        type: MSG.TRANSCRIPT_RESULT,
-        target: TARGET.POPUP,
-        data: message.data,
-      }).catch(() => {});
-      return false;
+      transcriptSegments.push(data);
+      saveState();
+      return sendToPopup(type, data);
 
     case MSG.TRANSCRIPT_INTERIM:
-      // Forward to popup if active
-      chrome.runtime.sendMessage({
-        type: MSG.TRANSCRIPT_INTERIM,
-        target: TARGET.POPUP,
-        data: message.data,
-      }).catch(() => {});
-      return false;
+      return sendToPopup(type, data);
 
     // === State Query (from Popup) ===
     case MSG.GET_STATE:
-      sendResponse({
+      return {
         success: true,
         data: {
           ...recorder.toJSON(),
           transcript: transcriptSegments.map((s) => s.text).join(' '),
         },
-      });
-      return false;
+      };
 
     default:
-      return false;
+      return undefined;
   }
-});
+}
 
 // ─── Start Recording ─────────────────────────────────────────
 async function handleStartRecording({ mode, language }) {
-  try {
-    recorder.transition(RECORDING_STATE.REQUESTING);
-    broadcastState();
-
-    transcriptSegments = [];
-
-    // Ensure offscreen document is created
-    await ensureOffscreenDocument();
-
-    // Send start command to offscreen document
-    const response = await chrome.runtime.sendMessage({
-      type: MSG.START_RECORDING,
-      target: TARGET.OFFSCREEN,
-      data: { mode, language },
-    });
-
-    if (!response?.success) {
-      recorder.transition(RECORDING_STATE.ERROR);
-      broadcastState({ error: response?.error || 'Failed to start recording' });
-      setTimeout(() => {
-        recorder.transition(RECORDING_STATE.IDLE);
-        broadcastState();
-      }, 3000);
-      return { success: false, error: response?.error };
-    }
-
-    return { success: true };
-  } catch (err) {
-    recorder.transition(RECORDING_STATE.ERROR);
-    broadcastState({ error: err.message });
-    setTimeout(() => {
-      recorder.transition(RECORDING_STATE.IDLE);
-      broadcastState();
-    }, 3000);
-    return { success: false, error: err.message };
+  if (recorder.state !== RECORDING_STATE.IDLE) {
+    return { success: false, error: 'A recording is already running' };
   }
+
+  transcriptSegments = [];
+  setState(RECORDING_STATE.REQUESTING);
+
+  let response;
+  try {
+    await ensureOffscreenDocument();
+    response = await sendToOffscreen(MSG.START_RECORDING, { mode, language });
+  } catch (err) {
+    response = { success: false, error: err.message };
+  }
+
+  if (!response?.success) {
+    const error = response?.error || 'Failed to start recording';
+    finish(RECORDING_STATE.ERROR, { error });
+    return { success: false, error };
+  }
+  return { success: true };
 }
 
 // ─── Stop Recording ──────────────────────────────────────────
 async function handleStopRecording() {
-  try {
-    recorder.transition(RECORDING_STATE.STOPPING);
-    broadcastState();
+  const isActive =
+    recorder.state === RECORDING_STATE.RECORDING || recorder.state === RECORDING_STATE.PAUSED;
+  if (!isActive) return { success: false, error: 'No active recording' };
 
-    await chrome.runtime.sendMessage({
-      type: MSG.STOP_RECORDING,
-      target: TARGET.OFFSCREEN,
-    });
-
-    return { success: true };
-  } catch (err) {
-    console.error('[SW] Stop recording error:', err);
-    return { success: false, error: err.message };
+  setState(RECORDING_STATE.STOPPING);
+  // RECORDING_COMPLETE may close the offscreen document before it answers here
+  const response = await sendToOffscreen(MSG.STOP_RECORDING).catch(() => null);
+  if (response?.success === false) {
+    finish(RECORDING_STATE.ERROR, { error: response.error });
+    return response;
   }
+  return { success: true };
 }
 
 // ─── Handle Recording Complete ───────────────────────────────
-async function handleRecordingComplete(data) {
-  const { dbKey, mimeType, duration, mode, fileSize } = data;
-  try {
-    recorder.transition(RECORDING_STATE.PROCESSING);
-    broadcastState();
+// The recording is already stored on this computer when this runs.
+async function handleRecordingComplete(recording) {
+  setState(RECORDING_STATE.PROCESSING);
+  await closeOffscreenDocument();
 
-    // Retrieve blob from IndexedDB (zero-copy binary transfer)
-    const blob = await getBlobFromIndexedDB(dbKey);
-    if (!blob) {
-      throw new Error('Recording data could not be retrieved from internal database');
-    }
-
-    // Check if user is authenticated for upload
-    const { data: sessionData } = await getSession();
-    const session = sessionData?.session;
-
-    if (session?.user) {
-      recorder.transition(RECORDING_STATE.UPLOADING);
-      broadcastState();
-
-      const filename = generateFilename(mode);
-
-      // Upload to Supabase Storage
-      const { data: uploadData, error: uploadError } = await uploadRecording(
-        blob,
-        session.user.id,
-        filename
-      );
-
-      if (uploadError) {
-        console.error('[SW] Upload error:', uploadError);
-        broadcastState({ error: `Upload failed: ${uploadError.message}` });
-      } else {
-        // Save metadata to database
-        const { data: recordingData, error: dbError } = await createRecording({
-          title: `Recording ${new Date().toLocaleString('id-ID')}`,
-          mode,
-          duration_ms: duration,
-          file_size: fileSize,
-          storage_path: uploadData.path,
-          mime_type: mimeType,
-          user_id: session.user.id,
-        });
-
-        if (dbError) {
-          console.error('[SW] DB error:', dbError);
-        }
-
-        // Save transcript if we have one
-        if (transcriptSegments.length > 0 && recordingData) {
-          const fullTranscript = transcriptSegments.map((s) => s.text).join(' ');
-          await saveTranscript({
-            recording_id: recordingData.id,
-            content: fullTranscript,
-            language: transcriptSegments[0]?.language || 'id-ID',
-            segments: transcriptSegments,
-          });
-        }
-      }
-    } else {
-      // Not authenticated — offer download
-      console.log('[SW] User not authenticated. Recording available for local download.');
-    }
-
-    recorder.transition(RECORDING_STATE.DONE);
-    broadcastState({
-      duration,
-      fileSize,
-      mode,
-    });
-
-    // Return to idle after a brief display of "done"
-    setTimeout(() => {
-      recorder.transition(RECORDING_STATE.IDLE);
-      broadcastState();
-    }, 2000);
-
-    // Clean up offscreen document
-    await closeOffscreenDocument();
-  } catch (err) {
-    console.error('[SW] Recording complete error:', err);
-    recorder.transition(RECORDING_STATE.ERROR);
-    broadcastState({ error: err.message });
-    setTimeout(() => {
-      recorder.transition(RECORDING_STATE.IDLE);
-      broadcastState();
-    }, 3000);
-  } finally {
-    // Always clean up database entry to save storage
-    if (dbKey) {
-      await deleteBlobFromIndexedDB(dbKey).catch(() => {});
+  let saved = { recording, savedTo: 'local' };
+  const { data } = await getSession();
+  if (data?.session?.user) {
+    setState(RECORDING_STATE.UPLOADING);
+    try {
+      await uploadToCloud(recording, data.session.user.id);
+      saved = { recording: null, savedTo: 'cloud' };
+    } catch (err) {
+      console.error('[SW] Upload error:', err);
+      saved.warning = `Upload failed: ${err.message}`;
     }
   }
+
+  finish(RECORDING_STATE.DONE, {
+    ...saved,
+    duration: recording.duration_ms,
+    fileSize: recording.file_size,
+  });
+}
+
+async function uploadToCloud(recording, userId) {
+  const blob = await getLocalBlob(recording.id);
+  const upload = await uploadRecording(blob, userId, generateFilename(recording.mode));
+  if (upload.error) throw upload.error;
+
+  const { data: row, error } = await createRecording({
+    title: recording.title,
+    mode: recording.mode,
+    duration_ms: recording.duration_ms,
+    file_size: recording.file_size,
+    storage_path: upload.data.path,
+    mime_type: recording.mime_type,
+    user_id: userId,
+  });
+  if (error) throw error;
+
+  if (recording.transcript) {
+    const { error: transcriptError } = await saveTranscript({
+      recording_id: row.id,
+      ...recording.transcript,
+    });
+    if (transcriptError) throw transcriptError;
+  }
+
+  // Only once everything is in the cloud
+  await deleteLocalRecording(recording.id);
 }
 
 // ─── Offscreen Document Management ──────────────────────────
-async function ensureOffscreenDocument() {
-  const existingContexts = await chrome.runtime.getContexts({});
-  const offscreenDoc = existingContexts.find(
-    (c) => c.contextType === 'OFFSCREEN_DOCUMENT'
-  );
+async function hasOffscreenDocument() {
+  const contexts = await chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'] });
+  return contexts.length > 0;
+}
 
-  if (!offscreenDoc) {
-    await chrome.offscreen.createDocument({
-      url: chrome.runtime.getURL('src/offscreen/offscreen.html'),
-      reasons: ['USER_MEDIA', 'AUDIO_PLAYBACK'],
-      justification: 'Screen and audio recording with MediaRecorder API',
-    });
-  }
+async function ensureOffscreenDocument() {
+  if (await hasOffscreenDocument()) return;
+  await chrome.offscreen.createDocument({
+    url: chrome.runtime.getURL('src/offscreen/offscreen.html'),
+    reasons: ['DISPLAY_MEDIA', 'USER_MEDIA'],
+    justification: 'Screen and audio recording with MediaRecorder API',
+  });
 }
 
 async function closeOffscreenDocument() {
   try {
-    const existingContexts = await chrome.runtime.getContexts({});
-    const offscreenDoc = existingContexts.find(
-      (c) => c.contextType === 'OFFSCREEN_DOCUMENT'
-    );
-    if (offscreenDoc) {
-      await chrome.offscreen.closeDocument();
-    }
+    if (await hasOffscreenDocument()) await chrome.offscreen.closeDocument();
   } catch (err) {
     console.log('[SW] Error closing offscreen document:', err.message);
   }
 }
 
-// ─── Forward Message to Offscreen ────────────────────────────
-function forwardToOffscreen(type, data = null) {
-  chrome.runtime.sendMessage({
-    type,
-    target: TARGET.OFFSCREEN,
-    data,
+// ─── Messaging ───────────────────────────────────────────────
+function sendToOffscreen(type, data = null) {
+  return chrome.runtime.sendMessage({ type, target: TARGET.OFFSCREEN, data });
+}
+
+function sendToPopup(type, data) {
+  chrome.runtime.sendMessage({ type, target: TARGET.POPUP, data }).catch(() => {
+    // Popup might not be open — that's fine
   });
 }
 
-// ─── Broadcast State Update ─────────────────────────────────
 function broadcastState(extra = {}) {
-  chrome.runtime.sendMessage({
-    type: MSG.STATE_UPDATE,
-    target: TARGET.POPUP,
-    data: {
-      ...recorder.toJSON(),
-      ...extra,
-    },
-  }).catch(() => {
-    // Popup might not be open — that's fine
-  });
+  sendToPopup(MSG.STATE_UPDATE, { ...recorder.toJSON(), ...extra });
 }
 
 // ─── Extension Icon Click ────────────────────────────────────

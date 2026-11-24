@@ -47,7 +47,8 @@
 - **Manifest V3 Specification** with background service worker life-cycle orchestration.
 - **Persistent Offscreen Document** keeping transcription and recording threads alive across popup open/close states.
 - **Web Audio API mixing engine** combining display streams and microphone input.
-- **Tus-based Supabase Chunked Storage Uploader** for unlimited recording sizes.
+- **Local-first storage**: the offscreen document saves the recording before anything else happens.
+- **Restartable service worker**: recording state lives in `chrome.storage.session`.
 
 ## 🚀 Getting Started
 
@@ -71,12 +72,18 @@ npm install
 Create a `.env` file in the root directory:
 
 ```env
-VITE_SUPABASE_URL=https://your-project.supabase.co
+VITE_SUPABASE_URL=https://your-project.supabase.co  # Optional, for cloud upload
 VITE_SUPABASE_ANON_KEY=your-anon-key
 VITE_OPENAI_API_KEY=your-openai-key  # Required for AI MoM generation
 ```
 
-### 3. Set Up Supabase
+### Recording without an account
+
+Sign-in is optional. Every recording is saved on this computer first (IndexedDB) and can be played, downloaded and turned into a MoM from the History page. When you are signed in and Supabase answers, the recording is uploaded and the local copy is removed after the upload succeeds.
+
+Leave `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` empty to hide the sign-in button. To use another Supabase project, change these values, follow step 3 and 4, and build again.
+
+### 3. Set Up Supabase (optional)
 
 1. Open the Supabase dashboard.
 2. Go to the **SQL Editor** and run the query in `supabase/schema.sql` to generate database tables, schemas, and Row Level Security (RLS) policies.
@@ -87,7 +94,7 @@ VITE_OPENAI_API_KEY=your-openai-key  # Required for AI MoM generation
    ```
 5. Enable **Google** as an Authentication Provider under **Authentication > Providers**.
 
-### 4. Configure Google Cloud Console
+### 4. Configure Google Cloud Console (optional)
 
 1. Navigate to the [Google Cloud Console](https://console.cloud.google.com).
 2. Create a new OAuth 2.0 Web Client credential.

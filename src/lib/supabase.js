@@ -52,4 +52,22 @@ export function getSupabase() {
   return supabaseInstance;
 }
 
+/** Whether this build has a cloud account server configured at all */
+export function isCloudConfigured() {
+  return !!(SUPABASE_URL && SUPABASE_ANON_KEY);
+}
+
+/** Whether the account server answers right now */
+export async function isSupabaseReachable() {
+  try {
+    const response = await fetch(`${SUPABASE_URL}/auth/v1/health`, {
+      headers: { apikey: SUPABASE_ANON_KEY },
+      signal: AbortSignal.timeout(6000),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 export default getSupabase;
